@@ -1,0 +1,25 @@
+# Raw / processed data (populated per Section 2 of the build spec)
+Data/
+data/
+!data/.gitkeep
+
+# Checkpoints (large binaries, logs, and surrogate models; not tracked in git)
+checkpoints/
+!checkpoints/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+.kilo/
+
+# Pipeline scratch
+*.tmp
+pcap_shards_*/

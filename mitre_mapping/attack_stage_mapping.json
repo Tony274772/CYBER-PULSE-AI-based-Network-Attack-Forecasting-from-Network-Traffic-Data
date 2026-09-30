@@ -1,0 +1,49 @@
+{
+  "stage_order": ["Benign", "Reconnaissance", "Initial_Access", "Lateral_Movement",
+                   "Command_And_Control", "Exfiltration", "Impact_DoS"],
+  "mitre_tactic_ids": {
+    "Reconnaissance": "TA0043",
+    "Initial_Access": "TA0001",
+    "Lateral_Movement": "TA0008",
+    "Command_And_Control": "TA0011",
+    "Exfiltration": "TA0010",
+    "Impact_DoS": "TA0040"
+  },
+  "cic_ids2017_label_map": {
+    "BENIGN": "Benign",
+    "PortScan": "Reconnaissance",
+    "FTP-Patator": "Initial_Access",
+    "SSH-Patator": "Initial_Access",
+    "Web Attack – Brute Force": "Initial_Access",
+    "Web Attack – XSS": "Initial_Access",
+    "Web Attack – Sql Injection": "Initial_Access",
+    "Heartbleed": "Initial_Access",
+    "Infiltration": "Lateral_Movement",
+    "Bot": "Command_And_Control",
+    "DoS slowloris": "Impact_DoS",
+    "DoS Slowhttptest": "Impact_DoS",
+    "DoS Hulk": "Impact_DoS",
+    "DoS GoldenEye": "Impact_DoS",
+    "DDoS": "Impact_DoS"
+  },
+  "ctu13_label_substring_rules": [
+    {"contains": "Normal", "stage": "Benign"},
+    {"contains": "Background", "stage": null, "note": "exclude from supervised heads; usable only in Stage-1 unsupervised pretraining pool"},
+    {"contains_any": ["CC", "Botnet"], "excludes": ["Scan"], "stage": "Command_And_Control"},
+    {"contains_any": ["Scan", "PortScan"], "stage": "Reconnaissance"}
+  ],
+  "nf_unsw_nb15_v2_label_map": {
+    "Benign": "Benign",
+    "Reconnaissance": "Reconnaissance",
+    "Exploits": "Initial_Access",
+    "Backdoor": "Initial_Access",
+    "Shellcode": "Initial_Access",
+    "Analysis": "Initial_Access",
+    "Fuzzers": "Initial_Access",
+    "Worms": "Lateral_Movement",
+    "DoS": "Impact_DoS",
+    "Generic": "Impact_DoS"
+  },
+  "note_on_impact_dos": "The problem statement lists five example stages; Impact/DoS (MITRE TA0040) is added as a sixth because CIC-IDS2017 is DoS/DDoS-heavy and forcing that traffic into one of the five would misrepresent it. Document this decision explicitly in the architecture doc.",
+  "note_on_ctu13_rules": "CTU-13 Label strings are free text (e.g. 'flow=From-Botnet-V42-TCP-CC107-N1-HTTP'); apply the substring rules in order and take the first match. This is an approximation and should be described as such."
+}

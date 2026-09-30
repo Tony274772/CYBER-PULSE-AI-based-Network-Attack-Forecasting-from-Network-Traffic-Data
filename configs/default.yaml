@@ -1,0 +1,33 @@
+data:
+  delta_t_seconds: 5
+  window_overlap: 0.5
+  sequence_length_W: 20
+  n_max_nodes: 128
+model:
+  gat_embed_dim: 64
+  gat_heads: 4
+  gat_layers: 2
+  rssm_h_dim: 128
+  rssm_z_dim: 32
+training:
+  stage1_lr: 1.0e-3
+  stage1_epochs: 25
+  stage1_batch_size: 64
+  stage2_encoder_lr: 1.0e-4
+  stage2_head_lr: 1.0e-3
+  stage2_epochs: 30
+  focal_loss_gamma: 2.0
+  kl_anneal_fraction: 0.10
+  lambda_infiltration: 1.0
+  lambda_mitre: 1.0
+paths:
+  cic2017_csv_dir: data/raw/cic2017/csv
+  cic2017_pcap: data/raw/cic2017/pcap/Wednesday-workingHours.pcap
+  cic2017_processed_dir: data/processed/cic2017
+  ctu13_dir: data/raw/ctu13
+  ctu13_processed_dir: data/processed/ctu13
+  nf_unsw_nb15_v2_csv: data/raw/nf_unsw_nb15_v2/NF-UNSW-NB15-v2.csv
+  nf_unsw_nb15_v2_processed_dir: data/processed/nf_unsw_nb15_v2
+  processed_dir: data/processed
+  checkpoint_dir: checkpoints
+  mitre_mapping: mitre_mapping/attack_stage_mapping.json
