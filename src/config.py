@@ -58,6 +58,7 @@ class PathsConfig:
     nf_unsw_nb15_v2_processed_dir: str = "data/processed/nf_unsw_nb15_v2"
     processed_dir: str = "data/processed"
     checkpoint_dir: str = "checkpoints"
+    metrics_dir: str = "metrics"
     mitre_mapping: str = "mitre_mapping/attack_stage_mapping.json"
 
 

@@ -331,7 +331,9 @@ def main() -> None:
         print(f"  surprise AUC={surprise_auc:.4f}")
 
     _write_results(lines, eval_path)
-    print(f"\nwrote {eval_path}")
+    metrics_dir = getattr(cfg.paths, "metrics_dir", "metrics")
+    _write_results(lines, os.path.join(metrics_dir, "eval_results.md"))
+    print(f"\nwrote {eval_path} and {os.path.join(metrics_dir, 'eval_results.md')}")
 
 
 def _write_results(lines: list[str], path: str) -> None:

@@ -114,8 +114,10 @@ def _write_eval_results(all_results: list[dict]) -> None:
         for split, m in res["splits"].items():
             lines.append(format_metrics_row(f"LR ({split})", m))
         lines.append("")
-    with open(_EVAL_RESULTS, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
+    for out_p in (_EVAL_RESULTS, os.path.join("metrics", "eval_results.md")):
+        os.makedirs(os.path.dirname(out_p), exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
 
 
 def main() -> None:

@@ -184,11 +184,15 @@ def main() -> None:
     }, out_path)
     print(f"\nsaved Stage-1 checkpoint -> {out_path}")
 
-    log_path = os.path.join(ckpt_dir, "stage1_log.json")
-    with open(log_path, "w", encoding="utf-8") as fh:
-        json.dump(log, fh, indent=2)
-    print(f"saved training log -> {log_path}")
-    _plot_curves(log, os.path.join(ckpt_dir, "stage1_curves.png"))
+    metrics_dir = getattr(cfg.paths, "metrics_dir", "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+    for d in (metrics_dir, ckpt_dir):
+        log_path = os.path.join(d, "stage1_log.json")
+        with open(log_path, "w", encoding="utf-8") as fh:
+            json.dump(log, fh, indent=2)
+        _plot_curves(log, os.path.join(d, "stage1_curves.png"))
+    print(f"saved training log -> {os.path.join(metrics_dir, 'stage1_log.json')}")
+    print(f"saved curves -> {os.path.join(metrics_dir, 'stage1_curves.png')}")
 
 
 def _plot_curves(log: dict, path: str) -> None:

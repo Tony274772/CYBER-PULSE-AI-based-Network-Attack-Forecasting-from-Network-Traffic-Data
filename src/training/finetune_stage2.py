@@ -133,6 +133,8 @@ def main() -> None:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     ckpt_dir = cfg.paths.checkpoint_dir
     os.makedirs(ckpt_dir, exist_ok=True)
+    metrics_dir = getattr(cfg.paths, "metrics_dir", "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
     stage1_path = args.stage1 or os.path.join(ckpt_dir, "stage1.pt")
     out_path = args.out or os.path.join(ckpt_dir, "gt_rssm_v1.pt")
 
@@ -214,17 +216,81 @@ def main() -> None:
                 "feature_stats": feature_stats,
             }, out_path)
             print(f"  * new best val F1={f1:.4f} -> saved {out_path}")
+
+            # Save best metrics JSON to metrics directory
+            best_metrics = {
+                "stage": 2,
+                "best_epoch": epoch,
+                "best_val_f1": f1,
+                "precision": val.get("precision"),
+                "recall": val.get("recall"),
+                "roc_auc": val.get("roc_auc"),
+                "pr_auc": val.get("pr_auc"),
+                "brier": val.get("brier"),
+                "class_weights": class_weights.cpu().tolist(),
+            }
+            with open(os.path.join(metrics_dir, "stage2_best_metrics.json"), "w", encoding="utf-8") as fh:
+                json.dump(best_metrics, fh, indent=2)
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= args.patience:
                 print(f"early stop: no val-F1 improvement in {args.patience} epochs")
                 break
 
-    with open(os.path.join(ckpt_dir, "stage2_history.json"), "w", encoding="utf-8") as fh:
-        json.dump({"best_epoch": best_epoch, "best_val_f1": best_f1,
-                   "history": history}, fh, indent=2)
+        # Persist running history and metric curves after each epoch
+        _save_stage2_metrics(metrics_dir, ckpt_dir, history, best_epoch, best_f1)
+
+    _save_stage2_metrics(metrics_dir, ckpt_dir, history, best_epoch, best_f1)
     print(f"\nStage-2 done. best val infiltration F1={best_f1:.4f} @ epoch {best_epoch}")
     print(f"checkpoint -> {out_path}")
+    print(f"metrics -> {os.path.join(metrics_dir, 'stage2_best_metrics.json')}")
+
+
+def _save_stage2_metrics(metrics_dir: str, ckpt_dir: str, history: list[dict],
+                         best_epoch: int, best_f1: float) -> None:
+    data = {"best_epoch": best_epoch, "best_val_f1": best_f1, "history": history}
+    for d in (metrics_dir, ckpt_dir):
+        with open(os.path.join(d, "stage2_history.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    _plot_stage2_curves(history, os.path.join(metrics_dir, "stage2_curves.png"))
+
+
+def _plot_stage2_curves(history: list[dict], path: str) -> None:
+    if not history:
+        return
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    epochs = [h["epoch"] for h in history]
+    f1s = [h.get("f1", 0) for h in history]
+    precisions = [h.get("precision", 0) for h in history]
+    recalls = [h.get("recall", 0) for h in history]
+    roc_aucs = [h.get("roc_auc", 0) for h in history]
+
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+    ax[0].plot(epochs, f1s, label="F1", marker="o", color="tab:blue")
+    ax[0].plot(epochs, precisions, label="Precision", linestyle="--", color="tab:green")
+    ax[0].plot(epochs, recalls, label="Recall", linestyle=":", color="tab:orange")
+    ax[0].set_title("Validation Infiltration Metrics")
+    ax[0].set_xlabel("Epoch")
+    ax[0].set_ylabel("Score")
+    ax[0].legend()
+    ax[0].grid(True, alpha=0.3)
+
+    ax[1].plot(epochs, roc_aucs, label="ROC-AUC", marker="s", color="tab:purple")
+    ax[1].set_title("Validation ROC-AUC")
+    ax[1].set_xlabel("Epoch")
+    ax[1].set_ylabel("AUC")
+    ax[1].legend()
+    ax[1].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

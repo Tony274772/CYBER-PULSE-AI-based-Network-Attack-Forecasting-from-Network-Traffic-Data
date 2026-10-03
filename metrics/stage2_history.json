@@ -1,0 +1,10 @@
+{
+  "best_epoch": 0,
+  "best_val_f1": 0.233,
+  "history": [
+    {
+      "epoch": 0,
+      "f1": 0.233
+    }
+  ]
+}

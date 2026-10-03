@@ -30,4 +30,5 @@ paths:
   nf_unsw_nb15_v2_processed_dir: data/processed/nf_unsw_nb15_v2
   processed_dir: data/processed
   checkpoint_dir: checkpoints
+  metrics_dir: metrics
   mitre_mapping: mitre_mapping/attack_stage_mapping.json
