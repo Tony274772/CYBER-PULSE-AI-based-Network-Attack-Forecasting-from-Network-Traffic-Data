@@ -1,12 +1,16 @@
 """Train and evaluate baseline models (Logistic Regression & XGBoost)."""
 
 import os
+import sys
 import argparse
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 import xgboost as xgb
 import joblib
+
+# Add the project root to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.config import Config
 from src.evaluation.metrics import calculate_metrics

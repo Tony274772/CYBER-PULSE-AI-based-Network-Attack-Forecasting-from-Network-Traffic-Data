@@ -56,7 +56,7 @@ class PathsConfig:
     cic2017_csv_dir: str = "data/raw/cic2017/csv"
     cic2017_pcap: str = "data/raw/cic2017/pcap/Wednesday-workingHours.pcap"
     ctu13_dir: str = "data/raw/ctu13"
-    processed_dir: str = "data/processed"
+    processed_dir: str = "data/processed/cic2017"
     checkpoint_dir: str = "checkpoints"
     metrics_dir: str = "metrics"
     mitre_mapping: str = "mitre_mapping/attack_stage_mapping.json"

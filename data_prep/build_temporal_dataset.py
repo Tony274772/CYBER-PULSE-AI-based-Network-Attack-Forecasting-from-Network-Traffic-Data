@@ -2,10 +2,14 @@
 
 import argparse
 import os
+import sys
 import json
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+
+# Add the project root to sys.path so we can import from src
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import Config
 from src.features.build_temporal_dataset import create_window_states, split_with_purge
@@ -15,7 +19,7 @@ def map_labels_to_stages(df: pd.DataFrame, mapping_file: str) -> pd.DataFrame:
     with open(mapping_file, "r", encoding="utf-8") as f:
         mapping = json.load(f)
         
-    label_to_stage = mapping["label_to_stage"]
+    label_to_stage = mapping.get("cic_ids2017_label_map", {})
     df["mapped_stage"] = df["Label"].map(label_to_stage).fillna("Benign")
     return df
 

@@ -1,11 +1,15 @@
 """Run evaluation on baseline and Temporal GRU models."""
 
 import os
+import sys
 import json
 import torch
 import numpy as np
 import pandas as pd
 import joblib
+
+# Add the project root to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.config import Config
 from src.evaluation.metrics import calculate_metrics, calculate_lead_time
