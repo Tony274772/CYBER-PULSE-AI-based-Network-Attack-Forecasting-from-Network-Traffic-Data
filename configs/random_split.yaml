@@ -1,0 +1,31 @@
+data:
+  delta_t_seconds: 5.0
+  history_windows: 12
+model:
+  flow_input_dim: 28
+  packet_input_dim: 12
+  branch_dim: 32
+  fused_dim: 64
+  hidden_dim: 64
+training:
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  epochs: 40
+  patience: 5
+  gradient_clip_norm: 1.0
+  seed: 42
+loss:
+  state_weight: 1.0
+  attack_weight: 5.0
+  stage_weight: 2.0
+paths:
+  cic2017_csv_dir: data/raw/cic2017/csv
+  cic2017_pcap: data/raw/cic2017/pcap/Wednesday-workingHours.pcap
+  ctu13_dir: data/raw/ctu13
+  processed_dir: data/processed_random/cic2017
+  checkpoint_dir: checkpoints_random
+  metrics_dir: metrics_1
+  mitre_mapping: mitre_mapping/attack_stage_mapping.json
+thresholding:
+  target_validation_fpr: 0.05
