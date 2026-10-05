@@ -104,7 +104,7 @@ def predict(input_path: str, config_path="configs/default.yaml") -> dict:
             if os.path.exists(c):
                 ckpt_path = c
                 break
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     
     model = TemporalWorldModel(config).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
