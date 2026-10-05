@@ -1,355 +1,145 @@
-"""Unified inference entry point (Section 7.10).
+"""Inference pipeline for Temporal World Model."""
 
-Single function ``predict(input_path, k_steps)`` used by **both** the Streamlit
-dashboard and the optional FastAPI wrapper — there is exactly one inference code
-path in the whole repository, so results never disagree between the two UIs.
-
-Loads ``checkpoints/gt_rssm_v1.pt`` once (cached at module level so repeated
-calls in the Streamlit session don't reload weights), accepts a PCAP or CSV path,
-runs it through the same feature pipeline as Section 7.4 (reusing
-``build_dataset``'s functions directly), runs the model forward pass, runs
-``imagine()`` from the last observed belief state, and returns a single dict.
-"""
-from __future__ import annotations
-
-import json
 import os
-import tempfile
-from pathlib import Path
-from typing import Any
-
+import joblib
+import json
+import torch
 import numpy as np
 import pandas as pd
-import torch
 
 from src.config import Config
-from src.features.packet_features import PacketFeatureIndex
-from src.features.schema import (
-    EDGE_FEATURE_COLUMNS,
-    EDGE_FEATURE_DIM,
-    NODE_FEATURE_DIM,
-    NODE_FEATURES,
-)
-from src.features.windowing import (
-    _epoch_seconds,
-    _explode_to_windows,
-    _aggregate_edges,
-    _attach_packet_features,
-    _node_features,
-    _build_window,
-    _severity_maps,
-    reconstruct_dense,
-)
-from src.model.gt_rssm import GTRSSM
+from src.model.temporal_world_model import TemporalWorldModel
+from src.explainability.integrated_gradients import explain_prediction
 
-# ---- module-level cache for loaded model -----------------------------------
-_CACHED_MODEL: GTRSSM | None = None
-_CACHED_MODEL_PATH: str | None = None
-_CACHED_CFG: Config | None = None
-_CACHED_CKPT: dict | None = None
-
-_DEFAULT_CONFIG = "configs/default.yaml"
-_DEFAULT_CKPT = "checkpoints/gt_rssm_v1.pt"
-_STAGE1_CKPT = "checkpoints/stage1.pt"
+# Import preprocessing
+from data_prep.clean_cic2017 import clean_one_file
+from src.features.build_temporal_dataset import create_window_states
 
 
-def _load_model(ckpt_path: str | None = None, cfg: Config | None = None,
-                device: str = "cpu") -> tuple[GTRSSM, Config, dict]:
-    """Load GT-RSSM from checkpoint, caching it for repeat calls."""
-    global _CACHED_MODEL, _CACHED_MODEL_PATH, _CACHED_CFG, _CACHED_CKPT
+def predict(input_path: str, config_path="configs/default.yaml") -> dict:
+    """End-to-end inference for a CSV or PCAP file."""
+    config = Config.load(config_path)
+    
+    # Check what kind of file we have
+    is_csv = input_path.lower().endswith(".csv")
+    is_pcap = input_path.lower().endswith(".pcap")
+    
+    if not is_csv and not is_pcap:
+        raise ValueError("Unsupported input format. Please upload a .csv or .pcap file.")
+        
+    flow_df = pd.DataFrame()
+    packet_df = pd.DataFrame()
+    
+    if is_csv:
+        flow_df = clean_one_file(input_path)
+        # We don't have true packet data
+        packet_df = pd.DataFrame()
+    elif is_pcap:
+        # In a real app we would run extract_packet_features on the uploaded PCAP.
+        # Since this is a hackathon, we would either simulate or use the existing logic.
+        # But for now, we will return an error since PCAP processing requires flow alignment usually,
+        # or we just process it as packet-only if model allows.
+        raise NotImplementedError("Standalone PCAP inference requires flow CSV pairing in this version.")
 
-    if ckpt_path is None:
-        ckpt_path = _DEFAULT_CKPT if os.path.exists(_DEFAULT_CKPT) else _STAGE1_CKPT
-
-    if _CACHED_MODEL is not None and _CACHED_MODEL_PATH == ckpt_path:
-        return _CACHED_MODEL, _CACHED_CFG, _CACHED_CKPT
-
-    if cfg is None:
-        cfg = Config.load(_DEFAULT_CONFIG)
-
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-
-    model = GTRSSM(
-        node_dim=ckpt.get("node_dim", NODE_FEATURE_DIM),
-        edge_dim=ckpt.get("edge_dim", EDGE_FEATURE_DIM),
-        n_stages=ckpt.get("n_stages", len(cfg.stage_order)),
-        embed_dim=cfg.model.gat_embed_dim,
-        heads=cfg.model.gat_heads,
-        layers=cfg.model.gat_layers,
-        h_dim=cfg.model.rssm_h_dim,
-        z_dim=cfg.model.rssm_z_dim,
-    )
-    model.load_state_dict(ckpt["model_state"], strict=False)
-    if ckpt.get("feature_stats"):
-        model.set_feature_stats(ckpt["feature_stats"])
-    model.to(device).eval()
-
-    _CACHED_MODEL = model
-    _CACHED_MODEL_PATH = ckpt_path
-    _CACHED_CFG = cfg
-    _CACHED_CKPT = ckpt
-    return model, cfg, ckpt
-
-
-# ---- CSV / PCAP → tidy DataFrame ------------------------------------------
-
-def _load_input(input_path: str, cfg: Config) -> tuple[pd.DataFrame, bool]:
-    """Load a CSV or PCAP into the tidy per-flow DataFrame the windowing needs.
-
-    Returns (tidy_df, has_pcap_data).
-    """
-    ext = Path(input_path).suffix.lower()
-    if ext in (".pcap", ".pcapng"):
-        return _load_pcap(input_path, cfg), True
-    elif ext in (".csv", ".parquet"):
-        return _load_csv(input_path, cfg), False
-    else:
-        raise ValueError(f"unsupported file extension: {ext}")
-
-
-def _load_csv(path: str, cfg: Config) -> pd.DataFrame:
-    """Load a CIC-IDS2017-style CSV or a pre-processed parquet."""
-    from src.ingestion.flow_csv_loader import load
-    return load(path, cfg.paths.mitre_mapping, spread_minutes=True)
-
-
-def _load_pcap(path: str, cfg: Config) -> pd.DataFrame:
-    """Parse a PCAP and turn the raw packets into a tidy flow-like frame."""
-    from src.ingestion.pcap_parser import parse_pcap
-
-    pkt_df = parse_pcap(path)
-    if pkt_df is None or pkt_df.empty:
-        return pd.DataFrame()
-
-    # Convert packet data to a flow-like dataframe for windowing
-    from src.features.schema import FLOW_FEATURES, FLOW_AVAIL_FEATURES
-    tidy = pd.DataFrame({
-        "timestamp": pd.to_datetime(pkt_df["timestamp"], unit="s"),
-        "src_ip": pkt_df["src_ip"].astype(str),
-        "dst_ip": pkt_df["dst_ip"].astype(str),
-        "src_port": pkt_df.get("src_port", 0),
-        "dst_port": pkt_df.get("dst_port", 0),
-        "protocol": pkt_df.get("protocol", 0),
-        "raw_label": "UNKNOWN",
-        "mapped_stage": "Benign",
-        "dataset": "upload",
-        "source_file": Path(path).name,
-    })
-    for c in FLOW_FEATURES:
-        if c not in tidy.columns:
-            tidy[c] = 0.0
-    for c in FLOW_AVAIL_FEATURES:
-        if c not in tidy.columns:
-            tidy[c] = 0.0
-    return tidy
-
-
-# ---- windowing (one-shot, no sharding) ------------------------------------
-
-def _window_input(tidy: pd.DataFrame, cfg: Config,
-                  has_pcap: bool) -> list[dict]:
-    """Run steps 1-7 of windowing on the input, returning a list of dense
-    window dicts (no parquet I/O — everything in memory for the small
-    inference-time input)."""
-    stride = cfg.window_stride_seconds
-    delta_t = cfg.data.delta_t_seconds
-    n_max = cfg.data.n_max_nodes
-    sev_rank, inv_sev = _severity_maps(cfg.stage_order)
-
-    tidy = tidy.copy()
-    tidy["_epoch"] = _epoch_seconds(tidy["timestamp"])
-    t_min = float(tidy["_epoch"].min())
-    t_max = float(tidy["_epoch"].max())
-    n_windows = max(1, int(np.floor((t_max - t_min) / stride)) + 1)
-
-    ex = _explode_to_windows(tidy, t_min, stride, delta_t)
-    if ex.empty:
-        return []
-
-    edges = _aggregate_edges(ex, sev_rank)
-    edges = _attach_packet_features(edges, None, t_min, False, stride, None)
-    nodes = _node_features(ex)
-
-    edges_by = {wid: g for wid, g in edges.groupby("window_id", sort=False)}
-    nodes_by = {wid: g for wid, g in nodes.groupby(level="window_id", sort=False)}
-
-    windows = []
-    for wid in range(n_windows):
-        start = t_min + wid * stride
-        w = _build_window(wid, start, edges_by.get(wid), nodes_by.get(wid),
-                          n_max, sev_rank, inv_sev)
-        dense = {
-            "window_id": wid,
-            "window_start": start,
-            "node_ips": list(w.node_ips),
-            "n_nodes": len(w.node_ips),
-            "n_edges": len(w.edge_src),
-        }
-        # Build dense tensors
-        row = {
-            "n_nodes": len(w.node_ips),
-            "node_feats_flat": w.node_feats.reshape(-1).tolist(),
-            "edge_src": [int(x) for x in w.edge_src],
-            "edge_dst": [int(x) for x in w.edge_dst],
-            "edge_feats_flat": w.edge_feats.reshape(-1).tolist(),
-            "infil_label": w.infil_label,
-            "stage_label": w.stage_label,
-        }
-        d = reconstruct_dense(row, n_max)
-        dense.update(d)
-        windows.append(dense)
-    return windows
-
-
-# ---- main inference function -----------------------------------------------
-
-@torch.no_grad()
-def predict(
-    input_path: str,
-    k_steps: tuple[int, ...] = (5, 10, 20),
-    ckpt_path: str | None = None,
-    config_path: str | None = None,
-    device: str = "cpu",
-) -> dict[str, Any]:
-    """Run the full inference pipeline on a PCAP or CSV file.
-
-    Returns a single dict:
-      * ``windows``: per-window metadata
-      * ``infiltration_timeline``: per-window sigmoid infiltration probability
-      * ``stage_timeline``: per-window predicted MITRE stage index + probabilities
-      * ``forecast``: dict keyed by K horizon → forecasted infil prob + stage probs
-      * ``kl_surprise``: per-window KL divergence (anomaly signal)
-      * ``attention_by_window``: dict window_id → attention info
-      * ``top_features_by_window``: dict window_id → SHAP/IG top features
-    """
-    cfg = Config.load(config_path or _DEFAULT_CONFIG)
-    model, cfg, ckpt = _load_model(ckpt_path, cfg, device)
-    stage_order = cfg.stage_order
-
-    # 1. Load and window the input
-    tidy, has_pcap = _load_input(input_path, cfg)
-    if tidy.empty:
-        return _empty_result()
-    windows = _window_input(tidy, cfg, has_pcap)
-    if not windows:
-        return _empty_result()
-
-    W = len(windows)
-    n_max = cfg.data.n_max_nodes
-
-    # 2. Stack into sequence tensors
-    node_feats = torch.zeros(1, W, n_max, NODE_FEATURE_DIM)
-    edge_feats = torch.zeros(1, W, n_max, n_max, EDGE_FEATURE_DIM)
-    adj_mask = torch.zeros(1, W, n_max, n_max)
-    valid_mask = torch.zeros(1, W, n_max)
-
-    for i, w in enumerate(windows):
-        node_feats[0, i] = torch.from_numpy(w["node_feats"])
-        edge_feats[0, i] = torch.from_numpy(w["edge_feats"])
-        adj_mask[0, i] = torch.from_numpy(w["adjacency_mask"])
-        valid_mask[0, i] = torch.from_numpy(w["node_valid_mask"])
-
-    # 3. Forward pass
-    out = model(node_feats.to(device), edge_feats.to(device),
-                adj_mask.to(device), valid_mask.to(device))
-
-    infil_probs = torch.sigmoid(out["infil_logit"])[0].cpu().numpy()  # [W]
-    stage_probs = torch.softmax(out["mitre_logits"], dim=-1)[0].cpu().numpy()  # [W, 7]
-    kl_vals = out["kl"][0].cpu().numpy()  # [W]
-    pred_stages = stage_probs.argmax(axis=-1)  # [W]
-
-    # 4. Build timelines
-    infiltration_timeline = []
-    stage_timeline = []
-    window_meta = []
-    for i, w in enumerate(windows):
-        infiltration_timeline.append({
-            "window_id": w["window_id"],
-            "window_start": w["window_start"],
-            "prob": float(infil_probs[i]),
-        })
-        stage_timeline.append({
-            "window_id": w["window_id"],
-            "predicted_stage_idx": int(pred_stages[i]),
-            "predicted_stage": stage_order[pred_stages[i]] if pred_stages[i] < len(stage_order) else "Unknown",
-            "probs": {s: float(stage_probs[i, j]) for j, s in enumerate(stage_order)},
-        })
-        window_meta.append({
-            "window_id": w["window_id"],
-            "window_start": w["window_start"],
-            "n_nodes": w["n_nodes"],
-            "n_edges": w["n_edges"],
-            "node_ips": w["node_ips"],
-            "gt_infil": w["infil_label"],
-            "gt_stage": w["stage_label"],
-        })
-
-    # 5. K-step imagination from last belief
-    forecast = {}
-    last_h = out["last_h"]
-    last_z = out["last_z"]
-    for K in k_steps:
-        traj = model.imagine(last_h, last_z, K)
-        forecast[K] = {
-            "infiltration_probs": [float(t["infiltration_prob"][0]) for t in traj],
-            "stage_probs": [
-                {s: float(t["stage_probs"][0, j]) for j, s in enumerate(stage_order)}
-                for t in traj
-            ],
-        }
-
-    # 6. Attention export for each window (lightweight)
-    attention_by_window = {}
-    try:
-        from src.explainability.attention_export import export_attention, top_suspicious_hosts
-        for i, w in enumerate(windows):
-            nf_t = node_feats[:, i:i+1].squeeze(1).to(device)
-            ef_t = edge_feats[:, i:i+1].squeeze(1).to(device)
-            am_t = adj_mask[:, i:i+1].squeeze(1).to(device)
-            vm_t = valid_mask[:, i:i+1].squeeze(1).to(device)
-            attn_info = export_attention(model, nf_t, ef_t, am_t, vm_t, w["node_ips"])
-            attn_info["suspicious_hosts"] = top_suspicious_hosts(attn_info)
-            # Don't serialize the full numpy matrix
-            attn_info.pop("attn_matrix", None)
-            attention_by_window[w["window_id"]] = attn_info
-    except Exception:
-        pass
-
-    # 7. Top features per window (SHAP surrogate if available)
-    top_features_by_window = {}
-    try:
-        surr_path = os.path.join(cfg.paths.checkpoint_dir, "xgb_surrogate.pkl")
-        if os.path.exists(surr_path):
-            from src.explainability.shap_surrogate import load_surrogate, explain_window
-            surrogate = load_surrogate(surr_path)
-            for i, w in enumerate(windows):
-                ef_dense = edge_feats[0, i].numpy()  # [N, N, d_e]
-                am_dense = adj_mask[0, i].numpy()     # [N, N]
-                real_edges = ef_dense[am_dense > 0]   # [n_edges, d_e]
-                if real_edges.shape[0] > 0:
-                    shap_info = explain_window(surrogate, real_edges, top_k=5)
-                    shap_info.pop("shap_values", None)
-                    top_features_by_window[w["window_id"]] = shap_info
-    except Exception:
-        pass
-
+    # Apply windowing
+    window_states = create_window_states(flow_df, packet_df, config.data.delta_t_seconds)
+    
+    if len(window_states) < config.data.history_windows:
+         raise ValueError(f"Not enough data to form a {config.data.history_windows}-window history.")
+         
+    # Take the latest history
+    latest_history = window_states.tail(config.data.history_windows)
+    
+    # Scale features
+    exclude_cols = ["window_id", "timestamp", "Label", "mapped_stage", "source_file", "packet_features_available"]
+    target_cols = [c for c in window_states.columns if c.startswith("next_") or c.startswith("y_") or c.startswith("future_")]
+    feature_cols = [c for c in window_states.columns if c not in exclude_cols and c not in target_cols]
+    
+    scaler_path = os.path.join(config.paths.processed_dir, "scaler.pkl")
+    scaler = joblib.load(scaler_path)
+    
+    log_cols = ["total_packets", "total_fwd_bytes", "total_bwd_bytes", "mean_flow_duration", "retransmission_count", "payload_size_mean"]
+    log_cols = [c for c in log_cols if c in feature_cols]
+    
+    for col in log_cols:
+        latest_history[col] = np.log1p(latest_history[col].clip(lower=0))
+        
+    scaled_feats = scaler.transform(latest_history[feature_cols])
+    
+    flow_cols = feature_cols[:28]
+    packet_cols = feature_cols[28:39] + ["packet_features_available"]
+    
+    flow_indices = [feature_cols.index(c) for c in flow_cols]
+    packet_indices = [feature_cols.index(c) for c in packet_cols]
+    
+    x_flow = scaled_feats[:, flow_indices]
+    x_packet = scaled_feats[:, packet_indices]
+    
+    # Model inference
+    device = torch.device("cpu")
+    ckpt = torch.load(os.path.join(config.paths.checkpoint_dir, "temporal_world_model.pt"), map_location=device)
+    
+    model = TemporalWorldModel(config).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+    
+    seq_flow = torch.tensor(x_flow, dtype=torch.float32).unsqueeze(0).to(device)
+    seq_packet = torch.tensor(x_packet, dtype=torch.float32).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        out = model(seq_flow, seq_packet)
+        p_attack = torch.sigmoid(out["attack_logits"]).squeeze(0).numpy()
+        p_stage = torch.softmax(out["stage_logits"], dim=-1).squeeze(0).numpy()
+        
+    stage_idx = np.argmax(p_stage)
+    stage_prob = p_stage[stage_idx]
+    stage_name = config.stage_order[stage_idx]
+    
+    # Recursive Rollout
+    forecast_timeline = []
+    h_curr = out["h_t"]
+    
+    # We will rollout 12 steps (60 seconds)
+    with torch.no_grad():
+        for step in range(12):
+            next_state_pred = model.next_state_head(h_curr)
+            
+            x_f_next = next_state_pred[:, :28]
+            x_p_next = next_state_pred[:, 28:]
+            
+            h_curr = model.forward_step(x_f_next, x_p_next, h_curr)
+            
+            step_out = model.attack_head(h_curr)
+            step_prob = torch.sigmoid(step_out).squeeze(0)[0].item() # +5s probability from the rolled out state
+            forecast_timeline.append(float(step_prob))
+            
+    # Explanations
+    attributions = explain_prediction(model, seq_flow, seq_packet, target_idx=1) # +30s horizon
+    
+    # Map back to feature names
+    top_flow_idx = np.argsort(attributions["flow_importance"])[::-1][:5]
+    top_packet_idx = np.argsort(attributions["packet_importance"])[::-1][:5]
+    
+    top_flow_feats = [flow_cols[i] for i in top_flow_idx]
+    top_packet_feats = [packet_cols[i] for i in top_packet_idx]
+    
+    current_state = latest_history.iloc[-1].to_dict()
+    
     return {
-        "windows": window_meta,
-        "infiltration_timeline": infiltration_timeline,
-        "stage_timeline": stage_timeline,
-        "forecast": forecast,
-        "kl_surprise": [{"window_id": windows[i]["window_id"],
-                         "kl": float(kl_vals[i])} for i in range(W)],
-        "attention_by_window": attention_by_window,
-        "top_features_by_window": top_features_by_window,
-        "stage_order": stage_order,
-    }
-
-
-def _empty_result() -> dict:
-    return {
-        "windows": [], "infiltration_timeline": [], "stage_timeline": [],
-        "forecast": {}, "kl_surprise": [],
-        "attention_by_window": {}, "top_features_by_window": [],
-        "stage_order": [],
+        "windows": len(window_states),
+        "current_state": {k: float(v) if isinstance(v, (int, float, np.number)) else v for k, v in current_state.items()},
+        "forecast": {
+            "5s": float(p_attack[0]),
+            "30s": float(p_attack[1]),
+            "60s": float(p_attack[2])
+        },
+        "forecast_timeline": forecast_timeline,
+        "stage_forecast": {
+            "stage": stage_name,
+            "probability": float(stage_prob)
+        },
+        "top_flow_features": top_flow_feats,
+        "top_packet_features": top_packet_feats,
+        "packet_features_available": bool(current_state.get("packet_features_available", 0) > 0),
+        "alert_threshold": float(ckpt["best_threshold"])
     }

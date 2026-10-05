@@ -1,23 +1,17 @@
-# GT-RSSM — Network Attack Forecasting (SIH26153)
-# Python 3.11+ (developed & verified on the Anaconda base env, Python 3.12).
-# NOTE ON PINS: shap/captum can drag numpy to 2.x, which breaks pandas/pyarrow/
-# torch wheels compiled against numpy 1.x. The versions below are a coherent,
-# verified set. If you install fresh, install numpy first, then the rest.
-
-numpy==1.26.4
-pandas>=2.2,<2.3
-pyarrow>=16,<17
-scikit-learn>=1.5,<1.6
-xgboost==2.1.4        # shap 0.45's TreeExplainer cannot parse xgboost 3.x base_score
-shap==0.45.1          # last release compatible with numpy 1.x
-captum>=0.7
-torch>=2.2            # verified on 2.5.1 (CUDA build works, CPU inference is the serving path)
-scapy>=2.5            # PCAP parsing — use PcapReader (streaming), never rdpcap
-pyyaml>=6
-tqdm>=4.6
-matplotlib>=3.8
-plotly>=5.17
-streamlit>=1.37
-fastapi>=0.110
-uvicorn>=0.29
-python-multipart>=0.0.9
+numpy
+pandas
+pyarrow
+scikit-learn
+xgboost
+shap
+scapy
+torch
+pyyaml
+tqdm
+matplotlib
+plotly
+streamlit
+fastapi
+uvicorn
+python-multipart
+captum

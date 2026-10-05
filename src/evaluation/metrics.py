@@ -1,72 +1,90 @@
-"""Shared evaluation metrics (Section 7.9).
-
-Threshold-based classification metrics plus the probabilistic/forecasting
-metrics the full evaluation needs. Kept dependency-light (sklearn + numpy) so
-both the LR baseline (7.7) and ``run_eval`` (7.9) import from here.
-"""
+"""Evaluation metrics and lead-time calculation."""
 from __future__ import annotations
 
 import numpy as np
-from sklearn.metrics import (
-    average_precision_score,
-    brier_score_loss,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+import pandas as pd
+from sklearn.metrics import precision_recall_curve, auc, f1_score, precision_score, recall_score, roc_auc_score, brier_score_loss
 
 
-def binary_metrics(y_true, y_prob, threshold: float = 0.5) -> dict:
-    """Precision / recall / F1 at ``threshold`` plus ROC-AUC, PR-AUC, Brier.
-
-    AUC metrics are skipped (NaN) when only one class is present in ``y_true``.
-    """
-    y_true = np.asarray(y_true).astype(int)
-    y_prob = np.asarray(y_prob, dtype=float)
+def calculate_metrics(y_true, y_prob, threshold=0.5):
+    """Calculates forecasting metrics."""
     y_pred = (y_prob >= threshold).astype(int)
-
-    out = {
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "threshold": float(threshold),
-        "n": int(y_true.size),
-        "positives": int(y_true.sum()),
-    }
-    if y_true.min() != y_true.max():
-        out["roc_auc"] = float(roc_auc_score(y_true, y_prob))
-        out["pr_auc"] = float(average_precision_score(y_true, y_prob))
-        out["brier"] = float(brier_score_loss(y_true, y_prob))
+    
+    # Handle cases where all true labels are negative
+    if len(np.unique(y_true)) == 1:
+        roc = np.nan
+        pr_auc = np.nan
     else:
-        out["roc_auc"] = float("nan")
-        out["pr_auc"] = float("nan")
-        out["brier"] = float("nan")
-    return out
+        roc = roc_auc_score(y_true, y_prob)
+        precision, recall, _ = precision_recall_curve(y_true, y_prob)
+        pr_auc = auc(recall, precision)
+        
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    
+    # FPR
+    tn = np.sum((y_true == 0) & (y_pred == 0))
+    fp = np.sum((y_true == 0) & (y_pred == 1))
+    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    
+    brier = brier_score_loss(y_true, y_prob)
+    
+    return {
+        "pr_auc": float(pr_auc),
+        "roc_auc": float(roc),
+        "f1": float(f1),
+        "precision": float(prec),
+        "recall": float(rec),
+        "fpr": float(fpr),
+        "brier": float(brier)
+    }
 
-
-def threshold_for_target_fpr(y_true, y_prob, target_fpr: float = 0.05) -> float:
-    """Smallest score threshold whose false-positive rate on ``y_true`` is
-    <= ``target_fpr`` (Section 7.9 lead-time alert threshold)."""
-    y_true = np.asarray(y_true).astype(int)
-    y_prob = np.asarray(y_prob, dtype=float)
-    neg = y_prob[y_true == 0]
-    if neg.size == 0:
-        return 0.5
-    # threshold at the (1 - target_fpr) quantile of negative scores
-    return float(np.quantile(neg, 1.0 - target_fpr))
-
-
-def format_metrics_row(name: str, m: dict) -> str:
-    """One markdown table row: name | P | R | F1 | ROC-AUC | PR-AUC | Brier."""
-    def f(x):
-        return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.4f}"
-    return (f"| {name} | {f(m.get('precision'))} | {f(m.get('recall'))} | "
-            f"{f(m.get('f1'))} | {f(m.get('roc_auc'))} | {f(m.get('pr_auc'))} | "
-            f"{f(m.get('brier'))} |")
-
-
-METRICS_TABLE_HEADER = (
-    "| Model | Precision | Recall | F1 | ROC-AUC | PR-AUC | Brier |\n"
-    "|---|---|---|---|---|---|---|"
-)
+def calculate_lead_time(df: pd.DataFrame, alert_threshold: float) -> dict:
+    """Calculate mean and median lead time from forecasting probabilities.
+    
+    Assumes df has 'timestamp', 'Label', 'p_attack_30', 'source_file'.
+    """
+    lead_times = []
+    
+    for _, group in df.groupby("source_file"):
+        group = group.sort_values("timestamp")
+        labels = group["Label"].values
+        probs = group["p_attack_30"].values
+        times = group["timestamp"].values
+        
+        # Identify attack episodes (contiguous blocks of non-benign)
+        in_attack = False
+        attack_start_time = None
+        
+        for i in range(len(labels)):
+            if labels[i] != "BENIGN":
+                if not in_attack:
+                    in_attack = True
+                    attack_start_time = times[i]
+                    
+                    # Look back before i to find the first alert
+                    alert_time = None
+                    for j in range(i-1, -1, -1):
+                        if probs[j] >= alert_threshold:
+                            alert_time = times[j]
+                        else:
+                            break # contiguous alert before attack
+                            
+                    if alert_time is not None:
+                        # calculate lead time in seconds
+                        lt = (attack_start_time - alert_time) / np.timedelta64(1, 's')
+                        lead_times.append(lt)
+                    else:
+                        # missed or late
+                        lead_times.append(0.0)
+            else:
+                in_attack = False
+                
+    if not lead_times:
+        return {"mean_lead_time": 0.0, "median_lead_time": 0.0}
+        
+    return {
+        "mean_lead_time": float(np.mean(lead_times)),
+        "median_lead_time": float(np.median(lead_times))
+    }
