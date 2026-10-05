@@ -27,7 +27,7 @@ if uploaded_file is not None:
             tmp_path = tmp.name
             
         try:
-            results = predict(tmp_path)
+            results = predict(tmp_path, config_path="configs/random_split.yaml")
             
             st.success("Analysis Complete!")
             
