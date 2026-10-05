@@ -48,7 +48,7 @@ def predict(input_path: str, config_path="configs/default.yaml") -> dict:
          raise ValueError(f"Not enough data to form a {config.data.history_windows}-window history.")
          
     # Take the latest history
-    latest_history = window_states.tail(config.data.history_windows)
+    latest_history = window_states.tail(config.data.history_windows).copy()
     
     # Scale features
     exclude_cols = ["window_id", "timestamp", "Label", "mapped_stage", "source_file", "packet_features_available"]
@@ -56,6 +56,20 @@ def predict(input_path: str, config_path="configs/default.yaml") -> dict:
     feature_cols = [c for c in window_states.columns if c not in exclude_cols and c not in target_cols]
     
     scaler_path = os.path.join(config.paths.processed_dir, "scaler.pkl")
+    if not os.path.exists(scaler_path):
+        candidates = [
+            os.path.join(config.paths.checkpoint_dir, "scaler.pkl"),
+            "data/processed_random/cic2017/scaler.pkl",
+            "Data/processed_random/cic2017/scaler.pkl",
+            "data/processed/cic2017/scaler.pkl",
+            "Data/processed/cic2017/scaler.pkl",
+            "checkpoints_random/scaler.pkl",
+            "checkpoints/scaler.pkl"
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                scaler_path = c
+                break
     scaler = joblib.load(scaler_path)
     
     log_cols = ["total_packets", "total_fwd_bytes", "total_bwd_bytes", "mean_flow_duration", "retransmission_count", "payload_size_mean"]
@@ -67,17 +81,30 @@ def predict(input_path: str, config_path="configs/default.yaml") -> dict:
     scaled_feats = scaler.transform(latest_history[feature_cols])
     
     flow_cols = feature_cols[:28]
-    packet_cols = feature_cols[28:39] + ["packet_features_available"]
+    packet_cols = feature_cols[28:39]
     
     flow_indices = [feature_cols.index(c) for c in flow_cols]
     packet_indices = [feature_cols.index(c) for c in packet_cols]
     
     x_flow = scaled_feats[:, flow_indices]
-    x_packet = scaled_feats[:, packet_indices]
+    x_packet_scaled = scaled_feats[:, packet_indices]
+    
+    if "packet_features_available" in latest_history.columns:
+        avail = latest_history["packet_features_available"].values.reshape(-1, 1).astype(np.float32)
+    else:
+        avail = np.zeros((len(latest_history), 1), dtype=np.float32)
+        
+    x_packet = np.hstack([x_packet_scaled, avail])
     
     # Model inference
     device = torch.device("cpu")
-    ckpt = torch.load(os.path.join(config.paths.checkpoint_dir, "temporal_world_model.pt"), map_location=device)
+    ckpt_path = os.path.join(config.paths.checkpoint_dir, "temporal_world_model.pt")
+    if not os.path.exists(ckpt_path):
+        for c in ["checkpoints_random/temporal_world_model.pt", "checkpoints/temporal_world_model.pt"]:
+            if os.path.exists(c):
+                ckpt_path = c
+                break
+    ckpt = torch.load(ckpt_path, map_location=device)
     
     model = TemporalWorldModel(config).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -121,7 +148,8 @@ def predict(input_path: str, config_path="configs/default.yaml") -> dict:
     top_packet_idx = np.argsort(attributions["packet_importance"])[::-1][:5]
     
     top_flow_feats = [flow_cols[i] for i in top_flow_idx]
-    top_packet_feats = [packet_cols[i] for i in top_packet_idx]
+    all_packet_names = packet_cols + ["packet_features_available"]
+    top_packet_feats = [all_packet_names[i] for i in top_packet_idx if i < len(all_packet_names)]
     
     current_state = latest_history.iloc[-1].to_dict()
     

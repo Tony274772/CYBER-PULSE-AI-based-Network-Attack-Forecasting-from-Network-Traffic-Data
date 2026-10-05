@@ -2,6 +2,8 @@
 Data/
 data/
 !data/.gitkeep
+!data/**/scaler.pkl
+!Data/**/scaler.pkl
 
 # Checkpoints (large binaries, logs, and surrogate models; not tracked in git)
 checkpoints/
