@@ -25,3 +25,6 @@ venv/
 # Pipeline scratch
 *.tmp
 pcap_shards_*/
+
+# Metrics
+metrics/

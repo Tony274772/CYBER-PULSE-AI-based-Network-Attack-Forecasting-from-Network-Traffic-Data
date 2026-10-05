@@ -17,4 +17,3 @@ Per-edge infiltration detection (one row per host-pair per window, flattened 49-
 |---|---|---|---|---|---|---|
 | LR (val) | 0.4904 | 0.8209 | 0.6140 | 0.9531 | 0.8756 | 0.1195 |
 | LR (test) | 0.6291 | 0.5316 | 0.5763 | 0.8461 | 0.6794 | 0.1486 |
-
